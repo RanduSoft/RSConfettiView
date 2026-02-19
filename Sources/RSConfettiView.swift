@@ -9,120 +9,418 @@ import UIKit
 import QuartzCore
 
 public class RSConfettiView: UIView {
+
+    // MARK: - Types
+
     public enum ConfettiType {
         case confetti
         case image(UIImage)
     }
 
-    private var emitter: CAEmitterLayer!
-    var colors: [UIColor]!
-	var intensity: Float! {
-		didSet {
-			if intensity > 1.5 {
-				// don't go above 1.5
-				print("\nRSConfettiView: You set a very high intensity, consider lowering it to get a better visual result\n")
-			}
-		}
-	}
-    var type: ConfettiType!
-    private var active: Bool!
+    public struct Configuration: Sendable {
+        public var birthRate: Float
+        public var lifetime: Float
+        public var velocity: CGFloat
+        public var velocityRange: CGFloat
+        public var spin: CGFloat
+        public var spinRange: CGFloat
+        public var scaleRange: CGFloat
+        public var scaleSpeed: CGFloat
 
-	public required init?(coder aDecoder: NSCoder) {
+        public static let `default` = Configuration()
+
+        public init(
+            birthRate: Float = 8.5,
+            lifetime: Float = 14.0,
+            velocity: CGFloat = 350.0,
+            velocityRange: CGFloat = 80.0,
+            spin: CGFloat = 3.5,
+            spinRange: CGFloat = 4.0,
+            scaleRange: CGFloat = 1.0,
+            scaleSpeed: CGFloat = -0.1
+        ) {
+            self.birthRate = birthRate
+            self.lifetime = lifetime
+            self.velocity = velocity
+            self.velocityRange = velocityRange
+            self.spin = spin
+            self.spinRange = spinRange
+            self.scaleRange = scaleRange
+            self.scaleSpeed = scaleSpeed
+        }
+    }
+
+    private enum EmitterMode {
+        case line
+        case point(CGPoint)
+    }
+
+    // MARK: - Properties
+
+    private var emitter: CAEmitterLayer?
+    private var emitterMode: EmitterMode = .line
+
+    public var colors: [UIColor] = [
+        UIColor(red: 0.40, green: 0.64, blue: 0.98, alpha: 1.0), // Blue
+        UIColor(red: 0.98, green: 0.42, blue: 0.62, alpha: 1.0), // Pink
+        UIColor(red: 1.00, green: 0.78, blue: 0.22, alpha: 1.0), // Yellow
+        UIColor(red: 0.96, green: 0.50, blue: 0.38, alpha: 1.0), // Coral
+        UIColor(red: 0.30, green: 0.78, blue: 0.60, alpha: 1.0), // Green
+        UIColor(red: 0.70, green: 0.52, blue: 0.90, alpha: 1.0), // Purple
+        UIColor(red: 0.98, green: 0.56, blue: 0.76, alpha: 1.0)  // Rose
+    ]
+
+    public var type: ConfettiType = .confetti
+
+    public var configuration: Configuration = .default
+
+    public private(set) var isActive: Bool = false
+
+    // MARK: - Init
+
+    public required init?(coder aDecoder: NSCoder) {
         super.init(coder: aDecoder)
-        setup()
     }
 
-	public override init(frame: CGRect) {
+    public override init(frame: CGRect) {
         super.init(frame: frame)
-        setup()
     }
 
-    private func setup() {
-        colors = [UIColor(red:0.95, green:0.40, blue:0.27, alpha:1.0),
-            UIColor(red:1.00, green:0.78, blue:0.36, alpha:1.0),
-            UIColor(red:0.48, green:0.78, blue:0.64, alpha:1.0),
-            UIColor(red:0.30, green:0.76, blue:0.85, alpha:1.0),
-            UIColor(red:0.58, green:0.39, blue:0.55, alpha:1.0)]
-        intensity = 0.75
-        type = .confetti
-        active = false
+    // MARK: - Layout
+
+    public override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let emitter else { return }
+        switch emitterMode {
+        case .line:
+            emitter.emitterPosition = CGPoint(x: bounds.midX, y: 0)
+            emitter.emitterSize = CGSize(width: bounds.width, height: 1)
+        case .point(let point):
+            emitter.emitterPosition = point
+        }
     }
 
+    // MARK: - Public
+
+    /// Starts confetti raining from the top of the view.
     public func startConfetti() {
-        emitter = CAEmitterLayer()
-        emitter.emitterPosition = CGPoint(x: frame.size.width / 2.0, y: 0)
-        emitter.emitterShape = CAEmitterLayerEmitterShape.line
-        emitter.emitterSize = CGSize(width: frame.size.width, height: 1)
+        emitterMode = .line
+        configureEmitter()
+    }
 
+    /// Starts confetti shooting from a specific point (confetti gun effect).
+    /// Particles burst upward and arc down with gravity.
+    public func startConfetti(from point: CGPoint) {
+        emitterMode = .point(point)
+        configureEmitter()
+    }
+
+    /// Starts confetti shooting from the center of a source view (confetti gun effect).
+    /// The source view's center is converted to this view's coordinate space.
+    public func startConfetti(from sourceView: UIView) {
+        let point = convert(sourceView.center, from: sourceView.superview)
+        startConfetti(from: point)
+    }
+
+    public func stopConfetti() {
+        emitter?.birthRate = 0
+        isActive = false
+    }
+
+    // MARK: - Private
+
+    private func configureEmitter() {
+        emitter?.removeFromSuperlayer()
+
+        let newEmitter = CAEmitterLayer()
+
+        switch emitterMode {
+        case .line:
+            newEmitter.emitterPosition = CGPoint(x: bounds.midX, y: 0)
+            newEmitter.emitterShape = .line
+            newEmitter.emitterSize = CGSize(width: bounds.width, height: 1)
+        case .point(let point):
+            newEmitter.emitterPosition = point
+            newEmitter.emitterShape = .point
+            newEmitter.emitterSize = .zero
+        }
+
+        let images = imagesForType(type)
+        let shapeDivisor = Float(max(images.count, 1))
         var cells = [CAEmitterCell]()
         for color in colors {
-            cells.append(confettiWithColor(color: color))
+            for image in images {
+                cells.append(confettiCell(for: color, image: image, shapeDivisor: shapeDivisor))
+            }
         }
 
-        emitter.emitterCells = cells
-        layer.addSublayer(emitter)
-        active = true
+        newEmitter.emitterCells = cells
+
+        layer.addSublayer(newEmitter)
+        emitter = newEmitter
+        isActive = true
+
+        if case .point = emitterMode {
+            Task {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                emitter?.birthRate = 0
+            }
+        }
     }
 
-	public func stopConfetti() {
-        emitter?.birthRate = 0
-        active = false
-    }
-
-    private func imageForType(type: ConfettiType) -> UIImage? {
-		switch type {
+    private func imagesForType(_ type: ConfettiType) -> [UIImage] {
+        switch type {
         case .confetti:
-			return confettiImage()
+            return Self.confettiShapes()
         case let .image(customImage):
-            return customImage
+            return [customImage]
         }
     }
 
-    private func confettiWithColor(color: UIColor) -> CAEmitterCell {
-        let confetti = CAEmitterCell()
-        confetti.birthRate = 8.5 * intensity
-        confetti.lifetime = 14.0 * intensity
-        confetti.lifetimeRange = 0
-        confetti.color = color.cgColor
-        confetti.velocity = CGFloat(350.0 * intensity)
-        confetti.velocityRange = CGFloat(80.0 * intensity)
-        confetti.emissionLongitude = CGFloat(Double.pi)
-        confetti.emissionRange = CGFloat(Double.pi)
-        confetti.spin = CGFloat(3.5 * intensity)
-        confetti.spinRange = CGFloat(4.0 * intensity)
-        confetti.scaleRange = CGFloat(intensity)
-        confetti.scaleSpeed = CGFloat(-0.1 * intensity)
-        confetti.contents = imageForType(type: type)!.cgImage
-        return confetti
-    }
+    private func confettiCell(for color: UIColor, image: UIImage, shapeDivisor: Float) -> CAEmitterCell {
+        let cell = CAEmitterCell()
+        let config = configuration
 
-    public func isActive() -> Bool {
-		return active
+        cell.birthRate = config.birthRate / shapeDivisor
+        cell.lifetime = config.lifetime
+        cell.lifetimeRange = 0
+        let alpha = CGFloat.random(in: 0.7...1.0)
+        cell.color = color.withAlphaComponent(alpha).cgColor
+        cell.velocity = config.velocity
+        cell.velocityRange = config.velocityRange
+        cell.spin = config.spin
+        cell.spinRange = config.spinRange
+        cell.scaleRange = config.scaleRange
+        cell.scaleSpeed = config.scaleSpeed
+        cell.contents = image.cgImage
+
+        switch emitterMode {
+        case .line:
+            cell.emissionLongitude = .pi
+            cell.emissionRange = .pi
+        case .point:
+            cell.birthRate *= 3
+            cell.velocity *= 1.3
+            cell.velocityRange *= 6
+            cell.emissionLongitude = -.pi / 2
+            cell.emissionRange = .pi / 8
+            cell.yAcceleration = 50
+        }
+
+        return cell
     }
 }
 
-extension RSConfettiView {
-	public static func showConfetti(inView view: UIView, type: ConfettiType = .confetti, intensity: Float = 1, duration: Double = 5, confettiBlocksUI: Bool = true, completitionHandler: (() -> Void)? = nil) {
-		let confettiView = RSConfettiView(frame: view.bounds)
-		confettiView.intensity = intensity
-		confettiView.isUserInteractionEnabled = confettiBlocksUI
-		view.addSubview(confettiView)
-		confettiView.startConfetti()
-		DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-			UIView.animate(withDuration: 0.6, animations: {
-				confettiView.alpha = 0
-			}, completion: { done in
-				if done {
-					confettiView.removeFromSuperview()
-					completitionHandler?()
-				}
-			})
-		}
-	}
-}
+// MARK: - Confetti Shapes
 
 extension RSConfettiView {
-	private func confettiImage() -> UIImage {
-		return UIImage(data: Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAA8AAAAPCAYAAAA71pVKAAAACXBIWXMAAAWJAAAFiQFtaJ36AAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAJZJREFUeNpi/P//PwO5gIlE9Q5AHADngWwmgB2AeMF/BPgAk8OnSQCIJ/zHDhzwaQZpvPAfN5iASzMhjSDwAJfmA/+JAwroGgsIaAAFVgLUdQzozv2AR+MFmCZsod2AR+MBbAGLzHmAJ3AE8Gl2wGOrA660gJw8H2JJjguB+ADOxIolKSJHlQK+pItLwgAabXjTPUCAAQDOH2xaUk7hYgAAAABJRU5ErkJggg==", options: .ignoreUnknownCharacters)!)!
-	}
+
+    private static func confettiShapes() -> [UIImage] {
+        [drawDot(), drawTriangle(), drawStrip(), drawSemiCircle(),
+         drawArc(), drawSquiggle(), drawStar(), drawCrown()]
+    }
+
+    private static func drawDot() -> UIImage {
+        let size = CGSize(width: 8, height: 8)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).fill()
+        }
+    }
+
+    private static func drawTriangle() -> UIImage {
+        let size = CGSize(width: 12, height: 10)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: size.width / 2, y: 0))
+            path.addLine(to: CGPoint(x: size.width, y: size.height))
+            path.addLine(to: CGPoint(x: 0, y: size.height))
+            path.close()
+            UIColor.white.setFill()
+            path.fill()
+        }
+    }
+
+    private static func drawStrip() -> UIImage {
+        let size = CGSize(width: 12, height: 5)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            UIColor.white.setFill()
+            UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 1).fill()
+        }
+    }
+
+    private static func drawSemiCircle() -> UIImage {
+        let size = CGSize(width: 12, height: 7)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let path = UIBezierPath(
+                arcCenter: CGPoint(x: size.width / 2, y: size.height),
+                radius: size.width / 2,
+                startAngle: .pi,
+                endAngle: 0,
+                clockwise: true
+            )
+            path.close()
+            UIColor.white.setFill()
+            path.fill()
+        }
+    }
+
+    private static func drawArc() -> UIImage {
+        let size = CGSize(width: 12, height: 12)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let path = UIBezierPath(
+                arcCenter: CGPoint(x: size.width / 2, y: size.height / 2),
+                radius: 4,
+                startAngle: .pi * 0.3,
+                endAngle: .pi * 1.7,
+                clockwise: true
+            )
+            path.lineWidth = 2.5
+            path.lineCapStyle = .round
+            UIColor.white.setStroke()
+            path.stroke()
+        }
+    }
+
+    private static func drawSquiggle() -> UIImage {
+        let size = CGSize(width: 10, height: 14)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: 2, y: 0))
+            path.addCurve(
+                to: CGPoint(x: 8, y: size.height / 2),
+                controlPoint1: CGPoint(x: 12, y: size.height * 0.15),
+                controlPoint2: CGPoint(x: -2, y: size.height * 0.35)
+            )
+            path.addCurve(
+                to: CGPoint(x: 2, y: size.height),
+                controlPoint1: CGPoint(x: 12, y: size.height * 0.65),
+                controlPoint2: CGPoint(x: -2, y: size.height * 0.85)
+            )
+            path.lineWidth = 2
+            path.lineCapStyle = .round
+            UIColor.white.setStroke()
+            path.stroke()
+        }
+    }
+
+    private static func drawStar() -> UIImage {
+        let size = CGSize(width: 14, height: 14)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let radius: CGFloat = 6
+            let path = UIBezierPath()
+            for i in 0..<4 {
+                let angle = CGFloat(i) * .pi / 4
+                path.move(to: CGPoint(
+                    x: center.x + cos(angle) * radius,
+                    y: center.y + sin(angle) * radius
+                ))
+                path.addLine(to: CGPoint(
+                    x: center.x - cos(angle) * radius,
+                    y: center.y - sin(angle) * radius
+                ))
+            }
+            path.lineWidth = 1.5
+            path.lineCapStyle = .round
+            UIColor.white.setStroke()
+            path.stroke()
+        }
+    }
+
+    private static func drawCrown() -> UIImage {
+        let size = CGSize(width: 14, height: 9)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: 0, y: size.height))
+            path.addLine(to: CGPoint(x: 0, y: size.height * 0.4))
+            path.addLine(to: CGPoint(x: size.width * 0.25, y: 0))
+            path.addLine(to: CGPoint(x: size.width * 0.5, y: size.height * 0.4))
+            path.addLine(to: CGPoint(x: size.width * 0.75, y: 0))
+            path.addLine(to: CGPoint(x: size.width, y: size.height * 0.4))
+            path.addLine(to: CGPoint(x: size.width, y: size.height))
+            path.close()
+            UIColor.white.setFill()
+            path.fill()
+        }
+    }
+}
+
+// MARK: - Static Convenience
+
+extension RSConfettiView {
+
+    /// Shows confetti raining from the top, auto-dismissing after `duration` seconds.
+    public static func showConfetti(
+        inView view: UIView,
+        type: ConfettiType = .confetti,
+        duration: Double = 3,
+        confettiBlocksUI: Bool = true,
+        completionHandler: (() -> Void)? = nil
+    ) {
+        let confettiView = RSConfettiView(frame: view.bounds)
+        confettiView.type = type
+        confettiView.isUserInteractionEnabled = confettiBlocksUI
+        view.addSubview(confettiView)
+        confettiView.startConfetti()
+
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            UIView.animate(withDuration: 0.6, animations: {
+                confettiView.alpha = 0
+            }, completion: { _ in
+                confettiView.stopConfetti()
+                confettiView.removeFromSuperview()
+                completionHandler?()
+            })
+        }
+    }
+
+    /// Shows a confetti gun burst from a point, auto-dismissing after `duration` seconds.
+    /// Particles shoot upward and arc down with gravity.
+    public static func showConfetti(
+        inView view: UIView,
+        from source: CGPoint,
+        type: ConfettiType = .confetti,
+        duration: Double = 3,
+        confettiBlocksUI: Bool = true,
+        completionHandler: (() -> Void)? = nil
+    ) {
+        let confettiView = RSConfettiView(frame: view.bounds)
+        confettiView.type = type
+        confettiView.isUserInteractionEnabled = confettiBlocksUI
+        view.addSubview(confettiView)
+        confettiView.startConfetti(from: source)
+
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            UIView.animate(withDuration: 0.6, animations: {
+                confettiView.alpha = 0
+            }, completion: { _ in
+                confettiView.stopConfetti()
+                confettiView.removeFromSuperview()
+                completionHandler?()
+            })
+        }
+    }
+
+    /// Shows a confetti gun burst from a source view's center, auto-dismissing after `duration` seconds.
+    public static func showConfetti(
+        inView view: UIView,
+        from sourceView: UIView,
+        type: ConfettiType = .confetti,
+        duration: Double = 3,
+        confettiBlocksUI: Bool = true,
+        completionHandler: (() -> Void)? = nil
+    ) {
+        let point = view.convert(sourceView.center, from: sourceView.superview)
+        showConfetti(
+            inView: view,
+            from: point,
+            type: type,
+            duration: duration,
+            confettiBlocksUI: confettiBlocksUI,
+            completionHandler: completionHandler
+        )
+    }
 }

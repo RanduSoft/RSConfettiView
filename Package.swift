@@ -1,20 +1,24 @@
-// swift-tools-version:5.4
+// swift-tools-version:6.1
 
 import PackageDescription
 
 let package = Package(
     name: "RSConfettiView",
-	platforms: [.iOS(.v9)],
+    platforms: [.iOS(.v15)],
     products: [
         .library(
-            name: "RSConfettiView",          
-            targets: ["RSConfettiView"]),
+            name: "RSConfettiView",
+            targets: ["RSConfettiView"]
+        ),
     ],
     targets: [
         .target(
             name: "RSConfettiView",
-			path: "Sources"
-		)
-    ],
-	swiftLanguageVersions: [.v5]
+            path: "Sources"
+        ),
+        .testTarget(
+            name: "RSConfettiViewTests",
+            dependencies: ["RSConfettiView"]
+        ),
+    ]
 )
